@@ -19,20 +19,26 @@ You never tell the AI how to fly. You give it:
    - ➖ small time penalty
    - ➕ **+100** for a safe landing (touch the pad, speed < 1.5, tilt < 15°)
    - ➖ **−100** for crashing (touch the ground or tip over)
-3. **Domain randomization** — every episode randomizes:
-   - gravity (4.9 ~ 24.5 m/s²), rocket mass (0.8 ~ 1.6), thrust (±20%),
-   - wind (±15 m/s), engine latency (3~10 steps), sensor noise,
+3. **Domain randomization with a curriculum** — training starts on textbook
+   physics; randomization strength ramps 0 → 1 over the second half of
+   training. Every episode randomizes (at full strength):
+   - gravity (9.8 ± 7 m/s²), rocket mass (1.0 +20/−30%), thrust (±15%),
+   - wind (±8 m/s), engine latency, sensor noise, attitude noise,
    - start position/velocity and pad location.
 
 Because the physics is never the same twice, the policy can't memorize one
 scenario — it must learn a *general* landing skill (sim-to-real readiness).
+
+Also note: the observation includes the rocket's offset from the pad — the
+agent can see where the pad is; otherwise landing on a randomized pad is
+impossible.
 
 ## Quick start
 
 ```bash
 pip install -r requirements.txt
 
-python train.py                  # full training (~1M steps, ~1-2h on a laptop)
+python train.py                  # full training (~1M steps, ~20-40 min on a laptop)
 python train.py --steps 200000   # quicker run
 python enjoy.py                  # watch the trained agent land (GUI window)
 ```

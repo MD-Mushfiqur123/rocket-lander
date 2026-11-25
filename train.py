@@ -1,16 +1,17 @@
 """Train a PPO agent to land a 3D rocket with domain randomization.
 
+Domain randomization strength ramps up automatically (curriculum): training
+starts on textbook physics and randomization gradually reaches full strength,
+so the policy learns a general landing skill instead of failing on day one.
+
 Usage:
     python train.py                     # full training (~1M steps, laptop OK)
     python train.py --steps 100000      # quicker run
-    python train.py --no-randomization  # fixed physics curriculum
+    python train.py --no-randomization  # curriculum disabled
 """
 
 import argparse
-import os
 
-import gymnasium as gym
-import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.monitor import Monitor
@@ -19,25 +20,25 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from rocket_lander_3d.env import RocketLander3DEnv
 
 
-class ProgressCallback(BaseCallback):
-    def __init__(self, total_steps, check_freq=10000):
+class CurriculumCallback(BaseCallback):
+    def __init__(self, total_steps, ramp_fraction=0.6, eval_steps=10):
         super().__init__()
         self.total_steps = total_steps
-        self.check_freq = check_freq
+        self.ramp_fraction = ramp_fraction
+        self.eval_steps = eval_steps
 
     def _on_step(self):
-        if self.num_timesteps % self.check_freq == 0:
-            recent = self.locals.get("infos", [])
-            landings = sum(1 for i in recent if i.get("outcome") == "landed")
-            crashes = sum(1 for i in recent if i.get("outcome") == "crashed")
-            print(
-                f"[{self.num_timesteps}/{self.total_steps}] "
-                f"landings={landings} crashes={crashes}"
-            )
+        strength = min(
+            1.0, self.num_timesteps / max(1.0, self.ramp_fraction * self.total_steps)
+        )
+        for wrapped in self.training_env.envs:
+            inner = wrapped.env
+            if hasattr(inner, "set_randomization_strength"):
+                inner.set_randomization_strength(strength)
         return True
 
 
-def evaluate_randomized(model, episodes=20):
+def evaluate_randomized(model, episodes=10):
     env = RocketLander3DEnv(domain_randomization=True, seed=12345)
     results = {"landed": 0, "crashed": 0, "timeout": 0}
     for _ in range(episodes):
@@ -59,16 +60,14 @@ def main():
     parser.add_argument("--model-name", default="rocket_lander_3d_ppo")
     args = parser.parse_args()
 
-    gym.register(
-        id="RocketLander3D-v0",
-        entry_point="rocket_lander_3d.env:RocketLander3DEnv",
-    )
-
-    env = DummyVecEnv(
-        [lambda: Monitor(RocketLander3DEnv(
-            domain_randomization=not args.no_randomization
-        ))]
-    )
+    env = DummyVecEnv([
+        lambda: Monitor(
+            RocketLander3DEnv(domain_randomization=not args.no_randomization)
+        )
+    ])
+    if not args.no_randomization:
+        for wrapped in env.envs:
+            wrapped.env.set_randomization_strength(0.0)
 
     model = PPO(
         "MlpPolicy",
@@ -82,20 +81,31 @@ def main():
         verbose=1,
         device="cpu",
     )
-    model.learn(
-        total_timesteps=args.steps,
-        callback=ProgressCallback(args.steps),
-        progress_bar=False,
-    )
-    model.save(args.model_name)
-    print(f"Model saved to {args.model_name}.zip")
 
-    print("\nEvaluating on 20 randomized episodes (unseen physics):")
-    results = evaluate_randomized(model)
-    total = sum(results.values())
-    print(f"  landed:  {results['landed']}/{total}")
-    print(f"  crashed: {results['crashed']}/{total}")
-    print(f"  timeout: {results['timeout']}/{total}")
+    total = args.steps
+    chunk_size = 100_000
+    done_steps = 0
+    while done_steps < total:
+        n = min(chunk_size, total - done_steps)
+        model.learn(total_timesteps=n, reset_num_timesteps=False)
+        done_steps += n
+        if not args.no_randomization:
+            for wrapped in env.envs:
+                wrapped.env.set_randomization_strength(
+                    min(1.0, done_steps / (0.6 * total))
+                )
+        model.save(args.model_name)
+        results = evaluate_randomized(
+            model, episodes=5 if done_steps < total else 15
+        )
+        label = "full randomization" if done_steps / (0.6 * total) >= 1 else "curriculum"
+        print(
+            f"[{done_steps:,}/{total:,} steps | {label}] "
+            f"landed={results['landed']} crashed={results['crashed']} "
+            f"timeout={results['timeout']}"
+        )
+
+    print(f"\nFinal model saved to {args.model_name}.zip")
     env.close()
 
 
