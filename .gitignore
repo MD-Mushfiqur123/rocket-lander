@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+*.zip
+*.pkl
+runs/
+logs/
+monitor_*.csv
+.vibe/
