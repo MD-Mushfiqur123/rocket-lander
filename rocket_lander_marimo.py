@@ -1,15 +1,19 @@
 # /// script
-# requires-python = ">=3.10"
+# requires-python = ">=3.10,<3.12"
 # dependencies = [
 #     "marimo",
-#     "numpy>=1.24",
-#     "pybullet>=3.2.5",
+#     "numpy>=1.24,<2.0",
+#     "pybullet==3.2.7",
 #     "gymnasium>=0.29",
 #     "stable-baselines3>=2.0",
 #     "matplotlib>=3.7",
 #     "pillow>=10.0",
 # ]
 # ///
+#
+# NOTE: Python is pinned to 3.10–3.11 because pybullet only publishes binary
+# wheels up to cp311; on 3.12+ it falls back to a source build that fails on
+# some cloud sandboxes (including molab).
 """3D Rocket Lander — RL with domain randomization, in one molab notebook.
 
 Train a PPO agent to land a 3D rocket on a pad while the physics changes every
