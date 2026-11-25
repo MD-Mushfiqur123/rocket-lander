@@ -39,7 +39,6 @@ def _imports():
     import marimo as mo
     import numpy as np
     import pybullet as p
-    import pybullet_utils.bullet_client as bc
     from PIL import Image
     from gymnasium import Env, spaces
     from stable_baselines3 import PPO
@@ -53,7 +52,6 @@ def _imports():
         Monitor,
         PPO,
         base64,
-        bc,
         math,
         mo,
         np,
@@ -107,12 +105,29 @@ def _(mo):
 
 
 @app.cell
-def _(Env, Image, PPO, bc, math, mo, np, p, spaces):
+def _(Env, Image, PPO, math, mo, np, p, spaces):
     BODY_HEIGHT = 2.0
     BODY_RADIUS = 0.35
     PAD_HALF_EXTENT = 1.5
     MAX_THRUST = 60.0
     MAX_SIDE_THRUST = 12.0
+
+    class SimClient:
+        """Thin wrapper exposing pybullet module functions bound to one connection"""
+
+        def __init__(self, connection_mode=p.DIRECT):
+            self.physics_client_id = p.connect(connection_mode)
+
+        def __getattr__(self, name):
+            target = getattr(p, name)
+            if not callable(target):
+                return target
+
+            def wrapper(*args, **kwargs):
+                kwargs.setdefault("physicsClientId", self.physics_client_id)
+                return target(*args, **kwargs)
+
+            return wrapper
 
     class RocketLander3DEnv(Env):
         """3D rocket landing environment on PyBullet with domain randomization."""
@@ -125,9 +140,7 @@ def _(Env, Image, PPO, bc, math, mo, np, p, spaces):
             client=None,
         ):
             self.rng = np.random.default_rng(seed)
-            self.renderer = client if client is not None else bc.BulletClient(
-                connection_mode=p.DIRECT
-            )
+            self.renderer = client if client is not None else SimClient()
             self.domain_randomization = domain_randomization
             self.max_episode_steps = max_episode_steps
             self.rocket_id = None
