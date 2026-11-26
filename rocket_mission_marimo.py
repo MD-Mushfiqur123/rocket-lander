@@ -190,11 +190,12 @@ def _(Env, math, np, spaces):
             self.max_episode_steps = max_episode_steps
             self.rng = np.random.default_rng(seed)
             self.rand_strength = 1.0
+            self.engine_failed = False
 
             n_act = 4 if self.cfg["has_chute"] else 3
             self.action_space = spaces.Box(0.0, 1.0, shape=(n_act,), dtype=np.float32)
 
-            n_obs = 7 + (1 if self.cfg["has_chute"] else 0) + 2
+            n_obs = 7 + (1 if self.cfg["has_chute"] else 0) + 2 + 1
             obs_high = np.full(n_obs, np.inf, dtype=np.float32)
             self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
 
@@ -266,6 +267,9 @@ def _(Env, math, np, spaces):
                 self._p["cd"] = cfg["cd"] * (1.0 + se * self.rng.uniform(-0.3, 0.3))
                 self._p["inertia"] = cfg["inertia"] * (
                     1.0 + se * self.rng.uniform(-0.3, 0.3))
+                if phase in ("landing", "reentry") and self.rng.random() < 0.5:
+                    self._p["engine_failure_hazard"] = self.rng.uniform(0.002, 0.01)
+                    self._p["failure_zone_z"] = min(self._p["z0"] * 0.35, 900.0)
 
         @property
         def _fuel_frac(self):
@@ -291,6 +295,7 @@ def _(Env, math, np, spaces):
                 "fuel": self._p["fuel0"],
             }
             self.chute_deployed = False
+            self.engine_failed = False
             self.step_count = 0
             if self.start_phase == "ascent":
                 self.stage = "ascent"
@@ -314,7 +319,8 @@ def _(Env, math, np, spaces):
                     self._fuel_frac,
                 ]
                 + ([chute] if cfg["has_chute"] else [])
-                + [ascent, 1.0 - ascent],
+                + [ascent, 1.0 - ascent]
+                + [1.0 if self.engine_failed else 0.0],
                 dtype=np.float32,
             )
             return obs
@@ -370,6 +376,12 @@ def _(Env, math, np, spaces):
 
         def step(self, action):
             self.step_count += 1
+            if (not self.engine_failed
+                    and self.state["pos"][1] < self._p.get("failure_zone_z", -1.0)
+                    and self._p.get("engine_failure_hazard") is not None
+                    and self.rng.random() < self._p["engine_failure_hazard"]):
+                self.engine_failed = True
+                self._p["thrust_scale"] *= 0.55  # one of the landing engines flames out
             a = np.clip(np.asarray(action, dtype=np.float64), 0.0, 1.0)
 
             if self.cfg["has_chute"] and not self.chute_deployed and a[2] > 0.5:
@@ -405,7 +417,7 @@ def _(Env, math, np, spaces):
             info = {
                 "outcome": outcome,
                 "stage": self.stage,
-                "engine_failed": False,
+                "engine_failed": self.engine_failed,
                 "fuel_frac": self._fuel_frac,
                 "speed": float(np.linalg.norm(self.state["vel"])),
                 "tilt": math.degrees(abs(self.state["theta"])),
@@ -473,7 +485,7 @@ def _(Env, math, np, spaces):
         def _finish(self, outcome, chute_rip=False):
             reward = 150.0 if outcome == "landed" else -150.0 - (80.0 if chute_rip else 0.0)
             info = {
-                "outcome": outcome, "stage": self.stage, "engine_failed": False,
+                "outcome": outcome, "stage": self.stage, "engine_failed": self.engine_failed,
                 "fuel_frac": self._fuel_frac,
                 "speed": float(np.linalg.norm(self.state["vel"])),
                 "tilt": math.degrees(abs(self.state["theta"])),
@@ -531,7 +543,7 @@ def _(math, np):
             mass = env.cfg["dry_mass"] + env.state["fuel"]
             if env.state["fuel"] <= 0:
                 return np.zeros(env.action_space.shape[0])
-            t_max = env.cfg["max_thrust"]
+            t_max = env.cfg["max_thrust"] * env._p.get("thrust_scale", 1.0)
             g = env._gravity_at(z)
             decel = max(t_max / mass - g, 1e-6)
             need = (vz ** 2) / (2 * decel) * self.eta
@@ -576,7 +588,7 @@ def _(math, np):
             theta, omega = obs[4], obs[5]
             cfg = env.cfg
             mass = cfg["dry_mass"] + env.state["fuel"]
-            t_max = cfg["max_thrust"]
+            t_max = cfg["max_thrust"] * env._p.get("thrust_scale", 1.0)
             zero = np.zeros(env.action_space.shape[0])
 
             v_rel = max(float(np.hypot(vx, vz)), 1e-6)
