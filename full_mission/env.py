@@ -102,29 +102,34 @@ class FullMissionEnv(gym.Env):
         self.chute_deployed = False
 
     def set_randomization_strength(self, strength):
-        """0 = textbook physics, 1 = full domain randomization."""
-        self.rand_strength = float(np.clip(strength, 0.0, 1.0))
+        """0 = textbook physics, 1 = full standard randomization, 2 = extreme
+        big-dataset mode (extra mass/drag/inertia/offset jitters on top)."""
+        self.rand_strength = float(np.clip(strength, 0.0, 2.0))
 
     def _randomize(self):
         s = self.rand_strength if self.domain_randomization else 0.0
+        sx = min(s, 1.0)
+        se = max(0.0, s - 1.0)
         cfg = self.cfg
 
         def j(u_low, u_high):
-            return (1.0 - s) + s * self.rng.uniform(u_low, u_high)
+            return (1.0 - sx) + sx * self.rng.uniform(u_low, u_high)
 
         phase = self.start_phase
         if phase == "landing":
-            x0 = (self.rng.uniform(-200, 200) * (1.0 - s)
-                  + self.rng.uniform(-1500, 1500) * j(0.5, 2.0) * s)
-            z0 = HOVER_POINT_ALT * (0.1 + 0.9 * s) * j(0.9, 1.15)
-            vx = (self.rng.uniform(-15, 15) * (1.0 - s)
-                  + self.rng.uniform(-40, 40) * j(0.5, 2.0) * s)
+            x0 = (self.rng.uniform(-200, 200) * (1.0 - sx)
+                  + self.rng.uniform(-1500, 1500) * j(0.5, 2.0) * sx)
+            z0 = HOVER_POINT_ALT * (0.1 + 0.9 * sx) * j(0.9, 1.15)
+            vx = (self.rng.uniform(-15, 15) * (1.0 - sx)
+                  + self.rng.uniform(-40, 40) * j(0.5, 2.0) * sx
+                  + self.rng.uniform(-20, 20) * se)
             vz = -j(0.7, 1.3) * (self.rng.uniform(40, 60)
-                                 + self.rng.uniform(150, 260) * s)
+                                 + self.rng.uniform(150, 260) * sx)
             theta = self.rng.uniform(-8, 8) * math.pi / 180 * j(0.5, 2.0)
         elif phase == "reentry":
             jit = cfg.get("entry_x_jitter", 3000.0)
-            x0 = self.rng.uniform(-jit, jit) * j(0.5, 2.0)
+            x0 = (self.rng.uniform(-jit, jit) * j(0.5, 2.0)
+                  + self.rng.uniform(-jit, jit) * se)
             z0 = cfg["entry_altitude"] * j(0.9, 1.1)
             vx = cfg["entry_vx"] * self.rng.uniform(-1.2, 1.2) * j(0.6, 1.4)
             vz = cfg["entry_vz"] * self.rng.uniform(0.8, 1.2) * j(0.8, 1.2)
@@ -143,15 +148,22 @@ class FullMissionEnv(gym.Env):
             raise ValueError(f"unknown start_phase {phase!r}")
 
         self._p = {
-            "gravity": cfg["gravity"] * (1.0 + s * self.rng.uniform(-0.1, 0.1)),
+            "gravity": cfg["gravity"] * (1.0 + sx * self.rng.uniform(-0.1, 0.1)),
             "mass_dry": cfg["dry_mass"],
             "fuel0": cfg["fuel_mass"] * j(0.95, 1.05),
             "thrust_scale": j(0.9, 1.1),
-            "wind": self.rng.uniform(-cfg["wind_speed"], cfg["wind_speed"]) * s,
-            "pad_x": (self.rng.uniform(-3_000, 3_000) * s
+            "wind": self.rng.uniform(-cfg["wind_speed"], cfg["wind_speed"]) * sx,
+            "pad_x": (self.rng.uniform(-3_000, 3_000) * sx
+                      + self.rng.uniform(-2_000, 2_000) * se
                       if phase != "ascent" else 0.0),
             "x0": x0, "z0": z0, "vx0": vx, "vz0": vz, "theta0": theta,
         }
+        if se > 0.0:
+            self._p["mass_dry"] = cfg["dry_mass"] * (
+                1.0 + se * self.rng.uniform(-0.3, 0.3))
+            self._p["cd"] = cfg["cd"] * (1.0 + se * self.rng.uniform(-0.3, 0.3))
+            self._p["inertia"] = cfg["inertia"] * (
+                1.0 + se * self.rng.uniform(-0.3, 0.3))
 
     @property
     def _fuel_frac(self):
@@ -225,7 +237,7 @@ class FullMissionEnv(gym.Env):
         st = self.state
         cfg = self.cfg
         thrust, t_dir, torque, mdot = self._thrust_and_torque(action)
-        mass = cfg["dry_mass"] + st["fuel"]
+        mass = self._p.get("mass_dry", cfg["dry_mass"]) + st["fuel"]
 
         a_force = np.zeros(2)
         a_force[1] -= self._gravity_at(st["pos"][1])
@@ -238,7 +250,8 @@ class FullMissionEnv(gym.Env):
         area = cfg["body_area"] + (
             cfg["chute_area"] if self.chute_deployed else 0.0
         )
-        cd_eff = cfg["cd"] + (cfg["chute_cd"] if self.chute_deployed else 0.0)
+        cd_eff = self._p.get("cd", cfg["cd"]) + (
+            cfg["chute_cd"] if self.chute_deployed else 0.0)
         q = 0.5 * rho * v_rel_mag ** 2
         if v_rel_mag > 1e-6:
             drag = q * cd_eff * area / mass
@@ -248,7 +261,7 @@ class FullMissionEnv(gym.Env):
         st["pos"] += st["vel"] * dt
 
         aero_torque = -2.5 * max(q, 0.0) * st["omega"] * 1e-6
-        alpha = (torque + aero_torque) / cfg["inertia"]
+        alpha = (torque + aero_torque) / self._p.get("inertia", cfg["inertia"])
         st["omega"] += alpha * dt
         st["theta"] += st["omega"] * dt
         if thrust > 0:

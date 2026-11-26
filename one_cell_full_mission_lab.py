@@ -22,6 +22,7 @@ NET_SIZE    = int(os.environ.get("LAB_NET_SIZE", 512))        # MLP [512, 512] �
 EVAL_EPS    = int(os.environ.get("LAB_EVAL_EPS", 5))
 N_REPLAY    = int(os.environ.get("LAB_REPLAY_EPS", 3))
 RESUME      = os.environ.get("LAB_RESUME", "1") == "1"        # পুরনো মডেল থাকলে ওখান থেকেই চলবে
+EXTREME     = os.environ.get("LAB_EXTREME", "0") == "1"       # কিউরিকুলাম শেষে 1→2: এক্সট্রিম বিগ-ডেটাসেট মোদ
 # ────────────────────────────────────────────────────────────────────────────
 
 MODEL_ZIP = f"{PRESET}_{PHASE}_ppo"
@@ -176,16 +177,20 @@ def stage4_train(FullMissionEnv):
         )
 
     ramp_frac, chunk = 0.6, max(100_000, N_STEPS * N_ENVS)
+    ramp = ramp_frac * TRAIN_STEPS
     while done_steps < TRAIN_STEPS:
         n = min(chunk, TRAIN_STEPS - done_steps)
         model.learn(total_timesteps=n, reset_num_timesteps=False)
         done_steps += n
-        frac = min(1.0, done_steps / max(1.0, ramp_frac * TRAIN_STEPS))
-        env.env_method("set_randomization_strength", frac)
+        frac = min(1.0, done_steps / max(1.0, ramp))
+        strength = min(2.0, frac + max(0.0, (done_steps - ramp) / max(1.0, 0.4 * TRAIN_STEPS))) \
+            if EXTREME else frac
+        env.env_method("set_randomization_strength", strength)
         model.save(MODEL_ZIP)
         json.dump(done_steps, open(DONE_FILE, "w"))
         quick = run_eval(FullMissionEnv, model, 2 if done_steps < TRAIN_STEPS else 0, seed0=12345)
-        label = "full randomization" if frac >= 1.0 else f"curriculum {frac:.0%}"
+        label = (f"extreme s={strength:.1f}" if strength > 1.0
+                 else ("full randomization" if frac >= 1.0 else f"curriculum {frac:.0%}"))
         if quick:
             landed = sum(1 for r in quick if r[0] == "landed")
             print(f"[{done_steps:,}/{TRAIN_STEPS:,} | {label}] চেকপয়েন্ট-ইভাল landed={landed}/{len(quick)}")
