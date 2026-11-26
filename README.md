@@ -6,6 +6,72 @@ running on your laptop with only free, open-source tools.
 
 Built with: **PyBullet** (3D physics), **Stable-Baselines3** (PPO), **Gymnasium**.
 
+# Rocket Lander — 3D + Full-Mission 🔥
+
+Le Lex Fridman–style rocket-landing RL project, extended with two tracks:
+
+| Track | What | Where |
+|---|---|---|
+| 3D domain-randomized lander | PPO lands a 3D rocket (PyBullet-free, NumPy physics) with curriculum-scaled domain randomization | `rocket_lander_3d/`, `train.py`, `rocket_lander_3d_colab.ipynb` |
+| **Full mission** (new) | Falcon-9-style planar 3-DOF mission simulator with a real **TVC gimbal**, engine-out failures, and **Mars EDL** with parachute physics | `full_mission/` |
+
+## Full-mission track (`full_mission/`)
+
+One continuous mission env — `full_mission/env.py` — pure NumPy, no heavy deps:
+
+- **TVC (Thrust Vector Control)**: the engine itself gimbals (±6° Falcon, ±8° Mars) and produces torque through a 15 m lever arm. Attitude is *not* a direct action — the agent must balance through the gimbal, exactly like a real F9.
+- **Fuel-optimal landing**: finite tank (250 t on Earth, 10 t on Mars), and the terminal bonus pays for landing with fuel left (`+100 × fuel fraction`), so the policy discovers its own suicide-burn schedule.
+- **Slanted atmosphere**: exponential density profile, drag with real Cd × area; climbing out burns the fuel that landing needs.
+- **Engine-out failure** (earth_falcon9): observation dim 15 = `engine_failed` flag; mid-flight single-engine failures are curriculum-scaled via domain-randomization strength.
+- **Mars EDL preset**: parachute with an irreversible deploy action — deploy above the dynamic-pressure limit (`max_chute_q = 8 kPa`) and the chute **rips** (−80 extra). Drop timing is a real learned skill.
+
+Presets: `earth_falcon9` (full launch → boostback → reentry → landing) and `mars_edl`.
+Start phases: `landing`, `reentry`, `boostback`, `ascent`.
+
+### Physics validation (scripted controllers)
+
+`full_mission/scripted_test.py` validates the simulator with hand-tuned
+state-feedback controllers — a suicide-burn landing controller, a
+gravity-turn ascent controller (MECO + coast back through 110 km alive),
+and a chute-first Mars EDL controller (deploy at q < 8 kPa, powered descent
+from 5 km with drag feed-forward):
+
+```bash
+PYTHONPATH=. python3 full_mission/scripted_test.py
+# landing    : 5/5 landed, ~4-6 m/s touchdown
+# full miss. : gravity turn to ~110 km, MECO, coast
+# mars edl   : 5/5 landed, 64% fuel remaining
+```
+
+### Train
+
+```bash
+PYTHONPATH=. python3 full_mission/train.py --preset earth_falcon9 --start-phase landing
+PYTHONPATH=. python3 full_mission/train.py --preset earth_falcon9 --start-phase ascent   # full mission
+PYTHONPATH=. python3 full_mission/train.py --preset mars_edl --steps 1000000
+```
+
+Domain randomization ramps automatically (curriculum: randomization strength
+0 → 1 over the first 60 % of steps, landing entry speed 0.5× → 1×). Use
+`--no-randomization` for fixed physics. 1–3 M steps recommended per phase
+(Colab T4 ≈ 30–60 min / M steps).
+
+## 3D lander track
+
+See the original README section below and `rocket_lander_3d_colab.ipynb` for
+the one-click Colab training flow.
+
+---
+
+## Full-mission molab notebook
+
+`rocket_mission_marimo.py` — the full-mission track as one self-contained
+marimo notebook (PEP 723 inline deps, zero compiled packages). Open
+[molab.marimo.io/new](https://molab.marimo.io/new), upload/load the file, pick
+a mission (`earth_falcon9` / `mars_edl`) and phase, press **🚀 Train the
+rocket**, and get trained-model mission replays as an animated GIF with a
+per-episode stats table. A scripted-controller physics self-check runs before
+training so you can see the simulator is landable.
 ## How it works
 
 You never tell the AI how to fly. You give it:
