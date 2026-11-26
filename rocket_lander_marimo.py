@@ -121,11 +121,13 @@ def _(Env, Image, PPO, math, mo, np, spaces):
             self.action_space = spaces.Box(
                 low=0.0, high=1.0, shape=(3,), dtype=np.float32
             )
-            obs_high = np.full(14, np.inf, dtype=np.float32)
+            obs_high = np.full(15, np.inf, dtype=np.float32)
             self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
             self._physics = {}
             self._state = None
             self._episode_thrust = 1.0
+            self._engine_thrust = 1.0
+            self._fail_step = None
             self._inertia_xx = 1.0
             self._action_queue = []
 
@@ -167,6 +169,15 @@ def _(Env, Image, PPO, math, mo, np, spaces):
                 start_vel = self.rng.uniform([-2, -2, 0], [2, 2, 1]) * s
                 pad_x = float(self.rng.uniform(-2, 2) * s)
                 pad_y = float(self.rng.uniform(-2, 2) * s)
+                engine_fail_step = None
+                if self.rng.random() < 0.5:
+                    engine_fail_step = int(
+                        self.rng.integers(0.2 * max(1, self.max_episode_steps),
+                                          0.6 * max(1, self.max_episode_steps))
+                    )
+                    self._fail_thrust = float(self.rng.uniform(0.55, 0.8))
+                else:
+                    self._fail_thrust = 1.0
             else:
                 gravity, mass, thrust_scale = 9.8, 1.0, 1.0
                 wind = np.zeros(3)
@@ -174,6 +185,7 @@ def _(Env, Image, PPO, math, mo, np, spaces):
                 start_pos = np.array([0.0, 0.0, 12.0])
                 start_vel = np.zeros(3)
                 pad_x = pad_y = 0.0
+                engine_fail_step, self._fail_thrust = None, 1.0
             self._physics = {
                 "gravity": gravity,
                 "mass": mass,
@@ -186,8 +198,11 @@ def _(Env, Image, PPO, math, mo, np, spaces):
                 "start_vel": start_vel,
                 "pad_x": pad_x,
                 "pad_y": pad_y,
+                "engine_fail_step": engine_fail_step,
             }
             self._episode_thrust = thrust_scale
+            self._engine_thrust = 1.0
+            self._fail_step = engine_fail_step
             self._inertia_xx = (mass / 12.0) * (3 * 0.35**2 + BODY_HEIGHT**2)
 
         def reset(self, seed=None):
@@ -218,11 +233,13 @@ def _(Env, Image, PPO, math, mo, np, spaces):
             obs = np.concatenate(
                 [s["pos"], s["vel"], [roll, pitch, yaw], s["ang"],
                  [s["pos"][0] - self._physics["pad_x"],
-                  s["pos"][1] - self._physics["pad_y"]]]
+                  s["pos"][1] - self._physics["pad_y"]],
+                 [1.0 if self._fail_step is None or self.step_count < self._fail_step
+                  else 0.0]]
             ).astype(np.float32)
             noise = self._physics.get("sensor_noise", 0.0)
             if noise > 0:
-                obs += self.rng.normal(0, noise, size=obs.shape).astype(np.float32)
+                obs[:14] += self.rng.normal(0, noise, size=14).astype(np.float32)
             return obs
 
         def _physics_substep(self, action):
@@ -233,7 +250,9 @@ def _(Env, Image, PPO, math, mo, np, spaces):
 
             force = np.zeros(3)
             force[2] -= phys["gravity"] * mass
-            thrust_force = a[0] * MAX_THRUST * self._episode_thrust
+            if self._fail_step is not None and self.step_count >= self._fail_step:
+                self._engine_thrust = self._fail_thrust
+            thrust_force = a[0] * MAX_THRUST * self._episode_thrust * self._engine_thrust
             force += np.array(
                 self._quat_rotate(s["orn"], [0, 0, 1])
             ) * thrust_force
@@ -327,6 +346,9 @@ def _(Env, Image, PPO, math, mo, np, spaces):
                 "tilt": tilt,
                 "lateral_dist": float(np.hypot(rel_x, rel_y)),
                 "outcome": outcome,
+                "engine_failed": (
+                    self._fail_step is not None and self.step_count >= self._fail_step
+                ),
             }
             return self._get_obs(), float(reward), terminated, truncated, info
 

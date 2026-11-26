@@ -25,6 +25,10 @@ You never tell the AI how to fly. You give it:
    - gravity (9.8 ± 7 m/s²), rocket mass (1.0 +20/−30%), thrust (±15%),
    - wind (±8 m/s), engine latency, sensor noise, attitude noise,
    - start position/velocity and pad location.
+4. **Engine failure (single-engine-out)** — in 50% of randomized episodes the
+   main engine fails mid-flight (between 20–60% of the episode), losing up to
+   45% of thrust — the Falcon 9 single-engine-out scenario. The agent sees an
+   `engine_health` flag in its 15-dim observation and must salvage the landing.
 
 Because the physics is never the same twice, the policy can't memorize one
 scenario — it must learn a *general* landing skill (sim-to-real readiness).

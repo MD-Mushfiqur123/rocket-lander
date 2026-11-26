@@ -47,12 +47,14 @@ class RocketLander3DEnv(gym.Env):
 
         self.action_space = spaces.Box(low=0.0, high=1.0, shape=(3,), dtype=np.float32)
 
-        obs_high = np.full(14, np.inf, dtype=np.float32)
+        obs_high = np.full(15, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
 
         self._physics = {}
         self.rand_strength = 1.0
         self._episode_thrust = 1.0
+        self._engine_thrust = 1.0
+        self._fail_step = None
         self._wind = np.zeros(3)
         self._engine_latency = 1
         self._action_queue = []
@@ -133,6 +135,8 @@ class RocketLander3DEnv(gym.Env):
             self.leg_ids.append(leg_id)
 
         self._episode_thrust = self._physics["thrust_scale"]
+        self._engine_thrust = 1.0
+        self._fail_step = self._physics["engine_fail_step"]
         self._wind = np.asarray(self._physics["wind"], dtype=np.float64)
         self._engine_latency = self._physics["engine_latency"]
         self._action_queue = []
@@ -159,12 +163,22 @@ class RocketLander3DEnv(gym.Env):
                 [-8, -8, 10], [8, 8, 14]
             ) * s
             start_vel = self.rng.uniform([-2, -2, 0], [2, 2, 1]) * s
+            engine_fail_step = None
+            if self.rng.random() < 0.5:
+                engine_fail_step = int(
+                    self.rng.integers(0.2 * max(1, self.max_episode_steps),
+                                      0.6 * max(1, self.max_episode_steps))
+                )
+                self._fail_thrust = float(self.rng.uniform(0.55, 0.8))
+            else:
+                self._fail_thrust = 1.0
         else:
             gravity, mass, thrust_scale = 9.8, 1.0, 1.0
             wind = np.zeros(3)
             engine_latency, sensor_noise = 1, 0.0
             start_pos = np.array([0.0, 0.0, 12.0])
             start_vel = np.zeros(3)
+            engine_fail_step, self._fail_thrust = None, 1.0
 
         self._physics = {
             "gravity": gravity,
@@ -177,6 +191,7 @@ class RocketLander3DEnv(gym.Env):
             "start_vel": start_vel,
             "pad_x": float(self.rng.uniform(-2, 2) * s) if self.domain_randomization else 0.0,
             "pad_y": float(self.rng.uniform(-2, 2) * s) if self.domain_randomization else 0.0,
+            "engine_fail_step": engine_fail_step,
         }
 
     def reset(self, seed=None, options=None):
@@ -204,12 +219,14 @@ class RocketLander3DEnv(gym.Env):
         euler = cid.getEulerFromQuaternion(orn)
         obs = np.array(
             list(pos) + list(vel) + [euler[0], euler[1], euler[2]] + list(ang)
-            + [pos[0] - self._physics["pad_x"], pos[1] - self._physics["pad_y"]],
+            + [pos[0] - self._physics["pad_x"], pos[1] - self._physics["pad_y"]]
+            + [1.0 if self._fail_step is None or self.step_count < self._fail_step
+               else 0.0],
             dtype=np.float32,
         )
         noise = self._physics.get("sensor_noise", 0.0)
         if noise > 0:
-            obs += self.rng.normal(0, noise, size=obs.shape).astype(np.float32)
+            obs[:14] += self.rng.normal(0, noise, size=14).astype(np.float32)
         return obs
 
     def _apply_thrust(self, action):
@@ -218,7 +235,9 @@ class RocketLander3DEnv(gym.Env):
         main, left, right = a
         pos, orn = cid.getBasePositionAndOrientation(self.rocket_id)
 
-        thrust_force = float(main) * MAX_THRUST * self._episode_thrust
+        if self._fail_step is not None and self.step_count >= self._fail_step:
+            self._engine_thrust = self._fail_thrust
+        thrust_force = float(main) * MAX_THRUST * self._episode_thrust * self._engine_thrust
         up_world = cid.rotateVector(orn, [0, 0, 1])
         cid.applyExternalForce(
             self.rocket_id, -1,
@@ -303,6 +322,7 @@ class RocketLander3DEnv(gym.Env):
             "tilt": tilt,
             "lateral_dist": lateral_dist,
             "outcome": outcome,
+            "engine_failed": self._fail_step is not None and self.step_count >= self._fail_step,
         }
         return self._get_obs(), float(reward), terminated, truncated, info
 
