@@ -21,7 +21,7 @@ import argparse
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
-from stable_baselines3.common.vec_env import DummyVecEnv
+from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from full_mission.env import FullMissionEnv
 
@@ -35,10 +35,7 @@ class CurriculumCallback:
 
     def apply(self, vec_env, done_steps):
         strength = min(1.0, done_steps / max(1.0, self.ramp_fraction * self.total_steps))
-        for wrapped in vec_env.envs:
-            inner = wrapped.env
-            if hasattr(inner, "set_randomization_strength"):
-                inner.set_randomization_strength(strength)
+        vec_env.env_method("set_randomization_strength", strength)
 
 
 def evaluate(model, preset, start_phase, episodes=10):
@@ -66,6 +63,9 @@ def main():
                         choices=["landing", "reentry", "boostback", "ascent"])
     parser.add_argument("--steps", type=int, default=1_000_000)
     parser.add_argument("--no-randomization", action="store_true")
+    parser.add_argument("--n-envs", type=int, default=8,
+                        help="parallel envs (8 good for a laptop/Colab T4)")
+    parser.add_argument("--ent-coef", type=float, default=0.01)
     parser.add_argument("--model-name", default=None)
     args = parser.parse_args()
 
@@ -74,15 +74,15 @@ def main():
         start_phase = "ascent" if args.preset == "earth_falcon9" else "reentry"
     model_name = args.model_name or f"{args.preset}_{start_phase}_ppo"
 
-    env = DummyVecEnv([
+    env = (SubprocVecEnv if args.n_envs > 1 else DummyVecEnv)([
         lambda: Monitor(
             FullMissionEnv(args.preset, start_phase=start_phase,
                            domain_randomization=not args.no_randomization)
         )
+        for _ in range(args.n_envs)
     ])
     if not args.no_randomization:
-        for wrapped in env.envs:
-            wrapped.env.set_randomization_strength(0.0)
+        env.env_method("set_randomization_strength", 0.0)
 
     model = PPO(
         "MlpPolicy",
@@ -92,7 +92,7 @@ def main():
         batch_size=1024,
         gamma=0.999,
         gae_lambda=0.95,
-        ent_coef=0.01,
+        ent_coef=args.ent_coef,
         verbose=1,
         device="auto",
     )

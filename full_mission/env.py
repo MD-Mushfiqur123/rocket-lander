@@ -114,10 +114,13 @@ class FullMissionEnv(gym.Env):
 
         phase = self.start_phase
         if phase == "landing":
-            x0 = self.rng.uniform(-500, 500) * (1.0 - s) + self.rng.uniform(-1500, 1500) * s
-            z0 = HOVER_POINT_ALT * j(0.9, 1.15)
-            vx = self.rng.uniform(-40, 40) * j(0.5, 2.0)
-            vz = -self.rng.uniform(150, 260) * j(0.7, 1.3) * (0.5 + 0.5 * s)
+            x0 = (self.rng.uniform(-200, 200) * (1.0 - s)
+                  + self.rng.uniform(-1500, 1500) * j(0.5, 2.0) * s)
+            z0 = HOVER_POINT_ALT * (0.1 + 0.9 * s) * j(0.9, 1.15)
+            vx = (self.rng.uniform(-15, 15) * (1.0 - s)
+                  + self.rng.uniform(-40, 40) * j(0.5, 2.0) * s)
+            vz = -j(0.7, 1.3) * (self.rng.uniform(40, 60)
+                                 + self.rng.uniform(150, 260) * s)
             theta = self.rng.uniform(-8, 8) * math.pi / 180 * j(0.5, 2.0)
         elif phase == "reentry":
             jit = cfg.get("entry_x_jitter", 3000.0)
@@ -337,6 +340,11 @@ class FullMissionEnv(gym.Env):
             d_now = np.linalg.norm(st["pos"] - goal_pos) / 1_000.0 + \
                 np.linalg.norm(st["vel"] - goal_vel) / 150.0
             reward += 3.0 * (d_prev - d_now)
+            z = st["pos"][1]
+            if z < 3000.0:
+                vz_ref = -np.clip(0.06 * z, 2.0, 90.0)
+                track = min(abs(st["vel"][1] - vz_ref) / 40.0, 3.0)
+                reward -= 2.0 * track
             retro = -math.atan2(-st["vel"][0], -st["vel"][1]) if \
                 np.linalg.norm(st["vel"]) > 30 else 0.0
             err = abs((st["theta"] - retro + math.pi) % (2 * math.pi) - math.pi)
