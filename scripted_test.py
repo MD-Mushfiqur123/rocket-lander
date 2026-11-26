@@ -11,11 +11,12 @@ def scripted_action(obs):
     pos = obs[0:3]
     vel = obs[3:6]
     roll, pitch = obs[6], obs[7]
+    rel = obs[12:14]
 
     vz_target = -2.2 if pos[2] > 2.0 else -0.35
     accel_z = 0.8 * (vz_target - vel[2])
-    accel_x = np.clip(-0.6 * vel[0] - 1.2 * pos[0], -3, 3)
-    accel_y = np.clip(-0.6 * vel[1] - 1.2 * pos[1], -3, 3)
+    accel_x = np.clip(-0.6 * vel[0] - 1.2 * rel[0], -3, 3)
+    accel_y = np.clip(-0.6 * vel[1] - 1.2 * rel[1], -3, 3)
 
     mass = 1.2
     main = np.clip((HOVER_THRUST_N + mass * accel_z) / MAX_THRUST, 0, 1)

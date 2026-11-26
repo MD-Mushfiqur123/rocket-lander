@@ -9,7 +9,7 @@ def main():
     for randomized in (True, False):
         env = RocketLander3DEnv(domain_randomization=randomized, seed=0)
         obs, info = env.reset()
-        assert obs.shape == (12,), f"bad obs shape {obs.shape}"
+        assert obs.shape == (14,), f"bad obs shape {obs.shape}"
         steps = 0
         total_reward = 0.0
         done = False

@@ -47,10 +47,11 @@ class RocketLander3DEnv(gym.Env):
 
         self.action_space = spaces.Box(low=0.0, high=1.0, shape=(3,), dtype=np.float32)
 
-        obs_high = np.full(12, np.inf, dtype=np.float32)
+        obs_high = np.full(14, np.inf, dtype=np.float32)
         self.observation_space = spaces.Box(-obs_high, obs_high, dtype=np.float32)
 
         self._physics = {}
+        self.rand_strength = 1.0
         self._episode_thrust = 1.0
         self._wind = np.zeros(3)
         self._engine_latency = 1
@@ -136,17 +137,28 @@ class RocketLander3DEnv(gym.Env):
         self._engine_latency = self._physics["engine_latency"]
         self._action_queue = []
 
+    def set_randomization_strength(self, strength):
+        """0 = textbook physics, 1 = full domain randomization."""
+        self.rand_strength = float(np.clip(strength, 0.0, 1.0))
+
     def _randomize_physics(self):
         if self.domain_randomization:
-            gravity = self.rng.uniform(4.9, 24.5)
-            mass = self.rng.uniform(0.8, 1.6)
-            thrust_scale = self.rng.uniform(0.8, 1.2)
-            wind = self.rng.uniform(-15, 15, size=3)
+            s = self.rand_strength
+
+            def lerp(u_low, u_high):
+                return (1.0 - s) + s * self.rng.uniform(u_low, u_high)
+
+            gravity = 9.8 + s * self.rng.uniform(-1.0, 1.0) * 7.0
+            mass = 1.0 + s * self.rng.uniform(-0.2, 0.3)
+            thrust_scale = lerp(0.85, 1.15)
+            wind = self.rng.uniform(-8, 8, size=3) * s
             wind[2] = 0.0
-            engine_latency = int(self.rng.integers(3, 10))
-            sensor_noise = self.rng.uniform(0.0, 0.20)
-            start_pos = self.rng.uniform([-8, -8, 10], [8, 8, 14])
-            start_vel = self.rng.uniform([-2, -2, 0], [2, 2, 1])
+            engine_latency = int(1 + s * (2 + self.rng.integers(0, 5)))
+            sensor_noise = self.rng.uniform(0.0, 0.12 * s)
+            start_pos = np.array([0.0, 0.0, 12.0]) * (1.0 - s) + self.rng.uniform(
+                [-8, -8, 10], [8, 8, 14]
+            ) * s
+            start_vel = self.rng.uniform([-2, -2, 0], [2, 2, 1]) * s
         else:
             gravity, mass, thrust_scale = 9.8, 1.0, 1.0
             wind = np.zeros(3)
@@ -163,8 +175,8 @@ class RocketLander3DEnv(gym.Env):
             "sensor_noise": sensor_noise,
             "start_pos": start_pos,
             "start_vel": start_vel,
-            "pad_x": float(self.rng.uniform(-2, 2)) if self.domain_randomization else 0.0,
-            "pad_y": float(self.rng.uniform(-2, 2)) if self.domain_randomization else 0.0,
+            "pad_x": float(self.rng.uniform(-2, 2) * s) if self.domain_randomization else 0.0,
+            "pad_y": float(self.rng.uniform(-2, 2) * s) if self.domain_randomization else 0.0,
         }
 
     def reset(self, seed=None, options=None):
@@ -191,7 +203,8 @@ class RocketLander3DEnv(gym.Env):
         vel, ang = cid.getBaseVelocity(self.rocket_id)
         euler = cid.getEulerFromQuaternion(orn)
         obs = np.array(
-            list(pos) + list(vel) + [euler[0], euler[1], euler[2]] + list(ang),
+            list(pos) + list(vel) + [euler[0], euler[1], euler[2]] + list(ang)
+            + [pos[0] - self._physics["pad_x"], pos[1] - self._physics["pad_y"]],
             dtype=np.float32,
         )
         noise = self._physics.get("sensor_noise", 0.0)
