@@ -8,6 +8,10 @@
 """
 
 import math
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 import numpy as np
 
@@ -120,7 +124,7 @@ class MarsEdlController:
         theta, omega = obs[4], obs[5]
         cfg = env.cfg
         mass = cfg["dry_mass"] + env.state["fuel"]
-        t_max = cfg["max_thrust"]
+        t_max = cfg["max_thrust"] * env._p.get("thrust_scale", 1.0)
         zero = np.zeros(env.action_space.shape[0])
 
         v_rel = max(float(np.hypot(vx, vz)), 1e-6)

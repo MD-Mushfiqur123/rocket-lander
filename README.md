@@ -63,9 +63,14 @@ the one-click Colab training flow.
 
 ---
 
-## Full-mission molab notebook
+## Full-mission notebooks
 
-`rocket_mission_marimo.py` — the full-mission track as one self-contained
+**Colab:** `colab_full_mission.ipynb` — one-click: clone → install (~10 s, no
+compiled deps) → physics self-check → train (`PRESET`/`PHASE`/`TRAIN_STEPS`
+configurable in one cell) → animated mission-replay GIF → save model to
+Drive/PC. 30–60 min per 1M steps on the free CPU tier (GPU not needed).
+
+**molab (marimo):** `rocket_mission_marimo.py` — the full-mission track as one self-contained
 marimo notebook (PEP 723 inline deps, zero compiled packages). Open
 [molab.marimo.io/new](https://molab.marimo.io/new), upload/load the file, pick
 a mission (`earth_falcon9` / `mars_edl`) and phase, press **🚀 Train the

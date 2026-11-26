@@ -18,6 +18,10 @@ Usage:
 """
 
 import argparse
+import pathlib
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.monitor import Monitor
