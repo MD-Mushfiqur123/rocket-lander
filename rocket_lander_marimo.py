@@ -360,13 +360,13 @@ def _(PPO, RocketLander3DEnv, DummyVecEnv, Monitor, mo, np,
         "MlpPolicy",
         env,
         learning_rate=3e-4,
-        n_steps=2048,
-        batch_size=256,
+        n_steps=4096,
+        batch_size=1024,
         gamma=0.999,
         gae_lambda=0.95,
         ent_coef=0.01,
         verbose=0,
-        device="cpu",
+        device="auto",
     )
     train_envs = env.envs
     for w in train_envs:
