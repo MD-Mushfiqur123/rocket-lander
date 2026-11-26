@@ -1,8 +1,9 @@
 # ═══════════════════════════════════════════════════════════════════════════
 #  🚀 ওয়ান-সেল ফুল-মিশন ল্যাব — সব কিছু এই এক সেলে:
 #    [১] ডিপেন্ডেন্সি ইনস্টল          [২] রিপো সেটআপ (clone)
-#    [৩] ফিজিক্স সেলফ-চেক     [৪] PPO ট্রেনিং (কিউরিকুলাম + রিজিউম)
-#    [৫] ইভাল টেবিল                  [৬] GIF মিশন-রিপ্লে + সেভ
+#    [৩] বাস্তব-স্পেক অডিট (real data) [৪] ফিজিক্স সেলফ-চেক
+#    [৫] PPO-GPU ট্রেনিং (কিউরিকুলাম + রিজিউম)
+#    [৬] ইভাল টেবিল                  [৭] GIF মিশন-রিপ্লে + সেভ
 #  ⚠️ কপি-পেস্ট হ্যাজার্ড: GitHub "view"-এর কোড কপি করলে নিউলাইন হারিয়ে
 #    SyntaxError হয়। র-লিঙ্ক (raw) থেকে কপি করো বা ফাইল ডাউনলোড করো।
 #  র-লিঙ্ক: https://raw.githubusercontent.com/MD-Mushfiqur123/rocket-lander/vibe/one-cell-lab-03248f/one_cell_full_mission_lab.py
@@ -13,8 +14,11 @@ import numpy as np
 # ── [০] কনফিগ নব — এখানে হাত দিয়ে বদলাও (Colab-এ এই চারটাই মূল খেলা) ──────
 PRESET      = os.environ.get("LAB_PRESET", "earth_falcon9")  # earth_falcon9 | mars_edl
 PHASE       = os.environ.get("LAB_PHASE", "landing")          # landing|reentry|boostback|ascent
-TRAIN_STEPS = int(os.environ.get("LAB_TRAIN_STEPS", 2_000_000))
-N_ENVS      = int(os.environ.get("LAB_N_ENVS", 4))
+TRAIN_STEPS = int(os.environ.get("LAB_TRAIN_STEPS", 3_000_000))
+N_ENVS      = int(os.environ.get("LAB_N_ENVS", 4))            # 2|4|8 রাখো
+BATCH_SIZE  = int(os.environ.get("LAB_BATCH_SIZE", 16384))    # GPU-তে কাজের ব্যাচ
+N_STEPS     = int(os.environ.get("LAB_N_STEPS", 32768))       # রোলআউট বাফার (= N_STEPS×N_ENVS স্যাম্পল/ইটারেশন)
+NET_SIZE    = int(os.environ.get("LAB_NET_SIZE", 512))        # MLP [512, 512] — GPU-ওয়ার্দি
 EVAL_EPS    = int(os.environ.get("LAB_EVAL_EPS", 5))
 N_REPLAY    = int(os.environ.get("LAB_REPLAY_EPS", 3))
 RESUME      = os.environ.get("LAB_RESUME", "1") == "1"        # পুরনো মডেল থাকলে ওখান থেকেই চলবে
@@ -63,7 +67,44 @@ def stage2_repo():
     return FullMissionEnv, LandingController, MarsEdlController, GravityTurnController, TvcAttitude
 
 
-# ── [৩] ফিজিক্স সেলফ-চেক: স্ক্রিপ্টেড কন্ট্রোলার ২টা এপিসোড ─────────────────
+# ── [৩] রিয়েল-স্পেক অডিট: সিমের ধ্রুবক vs প্রকাশিত বাস্তব ডেটা ─────────────
+def stage3_realdata(PRESETS):
+    spec = {
+        "earth_falcon9": [
+            ("গ্র্যাভিটি (m/s²)",            "gravity",       9.807,     "==="),
+            ("ড্রাই মাস (kg)",               "dry_mass",      25_600.0,  "~"),      # F9 S1 dry
+            ("প্রোপেলেন্ট (kg)",             "fuel_mass",     410_000.0, "গেম-সংকুচিত"),
+            ("থ্রাস্ট (MN, SL)",             "max_thrust",    7.6e6,     "~"),      # 9×Merlin 1D
+            ("ISP (s)",                     "isp",           300.0,     "~"),      # SL 282 / vac 311
+            ("বডি এরিয়া (m²)",             "body_area",     10.52,     "~"),      # d=3.66 m
+            ("TVC জিম্বাল (°)",             "gimbal_deg",    5.0,       "~"),
+            ("০-সমুদ্র ঘনত্ব (kg/m³)",      "rho0",          1.225,     "~"),
+            ("স্কেল-হাইট (m)",              "scale_height",  8_500.0,   "~"),      # US76 নিম্নস্তর
+            ("প্যাড অর্ধ-প্রস্থ (m)",        "pad_half_width", 30.0,     "LZ-1"),
+        ],
+        "mars_edl": [
+            ("গ্র্যাভিটি (m/s²)",            "gravity",       3.71,      "==="),
+            ("০-মান ঘনত্ব (kg/m³)",         "rho0",          0.020,     "~"),      # MSL-পরিমিত
+            ("স্কেল-হাইট (m)",              "scale_height",  11_100.0,  "~"),      # মিড-অ্যাটমোসফিয়ার
+            ("ছাতার এরিয়া (m²)",           "chute_area",    179.0,     "সিম-বড়"), # MSL D=15.1 m
+            ("dry_mass (kg)",               "dry_mass",      2_400.0,   "~"),
+            ("max thrust (kN)",             "max_thrust",    500.0,     "~"),
+            ("TVC জিম্বাল (°)",             "gimbal_deg",    8.0,       "~"),
+        ],
+    }
+    cfg = dict(PRESETS[PRESET])
+    print("🌍 রিয়েল-স্পেক অডিট (প্রকাশিত তথ্যের সাথে যাচাই):")
+    for label, key, real, note in spec[PRESET]:
+        sim = cfg.get(key)
+        if sim is None or not real:
+            continue
+        ratio = sim / real
+        print(f"   {label:<28} সিম={sim:>10,.1f} | বাস্তব={real:>10,.1f}"
+              f" | অনুপাত={ratio:.2f} [{note}]")
+    print("   (অনুপাত 1.0 = বাস্তবের সাথে হুবহু; 'গেম-সংকুচিত' মানে ছোট-এপিসোডের জন্য স্কেল করা)")
+
+
+# ── [৪] ফিজিক্স সেলফ-চেক: স্ক্রিপ্টেড কন্ট্রোলার ২টা এপিসোড ─────────────
 def stage3_selfcheck(FullMissionEnv, ctrl_cls):
     print("🔬 ফিজিক্স সেলফ-চেক …")
     oks, speeds = 0, []
@@ -88,9 +129,18 @@ def stage3_selfcheck(FullMissionEnv, ctrl_cls):
 
 # ── [৪] PPO ট্রেনিং: কিউরিকুলাম র‍্যাম্প + ১০০k-চাঙ্ক চেকপয়েন্ট + রিজিউম ───
 def stage4_train(FullMissionEnv):
+    import torch
     from stable_baselines3 import PPO
     from stable_baselines3.common.monitor import Monitor
     from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+    if DEVICE == "cuda":
+        print(f"🎮 GPU: {torch.cuda.get_device_name(0)} — ব্যাচ {BATCH_SIZE:,}, রোলআউট {N_STEPS:,}/ইটারেশন")
+        import warnings
+        warnings.filterwarnings("ignore", message=".*run PPO on the GPU.*")
+    else:
+        print("🖥️ GPU নেই — CPU-তে চলছে")
 
     env = None
     if N_ENVS > 1:
@@ -115,11 +165,17 @@ def stage4_train(FullMissionEnv):
             done_steps = int(json.load(open(DONE_FILE)))
         print(f"♻️ রিজিউ: {MODEL_ZIP}.zip (আগের অবস্থা {done_steps:,} স্টেপ)")
     if model is None:
-        model = PPO("MlpPolicy", env, learning_rate=3e-4, n_steps=4096,
-                    batch_size=1024, gamma=0.999, gae_lambda=0.95, ent_coef=0.01,
-                    verbose=1, device="auto")
+        model = PPO(
+            "MlpPolicy", env,
+            learning_rate=3e-4,
+            n_steps=N_STEPS,
+            batch_size=BATCH_SIZE,
+            gamma=0.999, gae_lambda=0.95, ent_coef=0.01,
+            policy_kwargs=dict(net_arch=[NET_SIZE, NET_SIZE]),
+            verbose=1, device=DEVICE,
+        )
 
-    ramp_frac, chunk = 0.6, 100_000
+    ramp_frac, chunk = 0.6, max(100_000, N_STEPS * N_ENVS)
     while done_steps < TRAIN_STEPS:
         n = min(chunk, TRAIN_STEPS - done_steps)
         model.learn(total_timesteps=n, reset_num_timesteps=False)
@@ -273,11 +329,12 @@ def stage7_drive():
 # ── মেইন পাইপলাইন: এক সেলে পুরো ল্যাব ─────────────────────────────────────
 def main_pipeline():
     stage1_deps()
+    from full_mission.env import PRESETS as _PRESETS
     FME, LCtrl, MCtrl, _G, _T = stage2_repo()
+    stage3_realdata(_PRESETS)
     t0 = time.time()
     stage3_selfcheck(FME, MCtrl if PRESET == "mars_edl" else LCtrl)
     print(f"   (সেলফ-চেক {time.time() - t0:.0f}s)")
-    from stable_baselines3 import PPO
     model = stage4_train(FME)
     stage5_eval(FME, model)
     stage6_replay(FME, model)
