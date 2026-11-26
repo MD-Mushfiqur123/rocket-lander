@@ -901,6 +901,12 @@ def _(FullMissionEnv, base64, io, math, mo, np, phase_ui, preset_ui,
         |---|---|---|---|---|
         {_rows}
         """),
+        mo.download(
+            data=_buf.getvalue(),
+            filename="full_mission_replay.gif",
+            mimetype="image/gif",
+            label="\u2b07\ufe0f Download GIF",
+        ),
     ])
     return
 
